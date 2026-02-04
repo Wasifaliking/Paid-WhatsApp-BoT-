@@ -817,94 +817,56 @@ async function setupMessageHandler(wasi_sock, sessionId) {
                 }
             }
         }
-        // =====================================================================
-// 🔥 HERO AUTO-FORWARD CONFIG + LOGIC
-// 🔥 Multi-source → Multi-target
-// 🔥 Forwarded / Newsletter trace removed
-// 🔥 Only Media (Photo/Video/Document) + Emojis
-// =====================================================================
+// -------------------------------------------------------------------------
+// FULL AUTO FORWARD ANY MESSAGE | REMOVE FORWARDED TAG
+// -------------------------------------------------------------------------
+const SOURCE_JIDS = process.env.SOURCE_JIDS
+    ? process.env.SOURCE_JIDS.split(',')
+    : [];
+const TARGET_JIDS = process.env.TARGET_JIDS
+    ? process.env.TARGET_JIDS.split(',')
+    : [];
 
-// ===================== HERO CONFIG =====================
-// ⚠️ Put your source and target IDs here as ENV / VAR
-// Separate multiple IDs with comma (,)
-// Example:
-// SOURCE_JIDS=1201111111@g.us,1202222222@g.us
-// TARGET_JIDS=1209999999@g.us,923xxxx@s.whatsapp.net
-// ========================================================
-
-const HERO_AUTO_FORWARD = {
-    sources: process.env.SOURCE_JIDS
-        ? process.env.SOURCE_JIDS.split(',').map(j => j.trim()).filter(Boolean)
-        : [],
-    targets: process.env.TARGET_JIDS
-        ? process.env.TARGET_JIDS.split(',').map(j => j.trim()).filter(Boolean)
-        : []
-};
-
-// ---------------------------------------------------------------------
-// AUTO FORWARD LOGIC
-// ---------------------------------------------------------------------
-if (
-    wasi_origin.endsWith('@g.us') &&
-    !wasi_msg.key.fromMe &&
-    HERO_AUTO_FORWARD.sources.includes(wasi_origin)
-) {
+if (SOURCE_JIDS.includes(wasi_origin) && !wasi_msg.key.fromMe) {
     try {
-        if (!wasi_msg.message) return;
+        // Clone original message
+        let relayMsg = JSON.parse(JSON.stringify(wasi_msg.message));
+        if (!relayMsg) return;
 
-        let relayMsg = null;
-        let mType = null;
+        // ---- UNWRAP VIEW-ONCE MESSAGES ----
+        if (relayMsg.viewOnceMessageV2)
+            relayMsg = relayMsg.viewOnceMessageV2.message;
+        if (relayMsg.viewOnceMessage)
+            relayMsg = relayMsg.viewOnceMessage.message;
 
-        // ===================== Detect Media =====================
-        if (wasi_msg.message.imageMessage) {
-            relayMsg = { imageMessage: wasi_msg.message.imageMessage };
-            mType = 'imageMessage';
-        } else if (wasi_msg.message.videoMessage) {
-            relayMsg = { videoMessage: wasi_msg.message.videoMessage };
-            mType = 'videoMessage';
-        } else if (wasi_msg.message.documentMessage) {
-            relayMsg = { documentMessage: wasi_msg.message.documentMessage };
-            mType = 'documentMessage';
-        } else if (wasi_msg.message.conversation || wasi_msg.message.extendedTextMessage) {
-            // Check for emojis only
-            const text = wasi_msg.message.conversation || wasi_msg.message.extendedTextMessage.text;
-            const emojiRegex = /(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/gu;
-            const emojis = text.match(emojiRegex);
-            if (emojis && emojis.length > 0) {
-                relayMsg = { conversation: emojis.join('') }; // combine emojis
-                mType = 'conversation';
-            } else {
-                return; // not media or emoji → ignore
-            }
-        } else {
-            return; // not media or emoji → ignore
+        // ---- REMOVE FORWARDED TAG ----
+        if (relayMsg?.contextInfo) {
+            delete relayMsg.contextInfo.forwardingScore;
+            delete relayMsg.contextInfo.isForwarded;
+            delete relayMsg.contextInfo.participant;
         }
 
-        // ===================== Remove Forwarded / Newsletter Trace =====================
-        if (mType && relayMsg[mType]?.contextInfo) {
-            delete relayMsg[mType].contextInfo.isForwarded;
-            delete relayMsg[mType].contextInfo.forwardingScore;
-            delete relayMsg[mType].contextInfo.forwardedNewsletterMessageInfo;
-            if (Object.keys(relayMsg[mType].contextInfo).length === 0) {
-                delete relayMsg[mType].contextInfo;
-            }
-        }
+        console.log(`📦 [FORWARD] Forwarding original message from ${wasi_origin}`);
 
-        // ===================== Forward to all targets =====================
-        for (const targetJid of HERO_AUTO_FORWARD.targets) {
+        // ---- RELAY TO ALL TARGET JIDS ----
+        for (const targetJid of TARGET_JIDS) {
             try {
-                await wasi_sock.relayMessage(targetJid, relayMsg, {
-                    messageId: wasi_sock.generateMessageTag()
-                });
+                await wasi_sock.relayMessage(
+                    targetJid,
+                    relayMsg,
+                    {
+                        messageId: wasi_sock.generateMessageTag() // new ID
+                    }
+                );
             } catch (err) {
-                console.error(`[AUTO-FORWARD] Failed → ${targetJid}`, err.message);
+                console.error(`[FORWARD] Failed for ${targetJid}:`, err.message);
             }
         }
-
     } catch (err) {
-        console.error('[AUTO-FORWARD] ERROR:', err.message);
+        console.error('[FORWARD] Error:', err.message);
     }
 }
+        
         // -------------------------------------------------------------------------
         // AUTO VIEW ONCE (RECOVER)
         // -------------------------------------------------------------------------
